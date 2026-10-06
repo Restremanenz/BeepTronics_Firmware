@@ -17,7 +17,7 @@
 //
 //  PUBLIC
 //
-MS5611::MS5611(uint8_t select, uint8_t dataOut, uint8_t dataIn, uint8_t clock)
+MS5611::MS5611(uint8_t select, uint8_t miso, uint8_t mosi, uint8_t clock)
 {
 
     _temperature = -999;
@@ -29,8 +29,8 @@ MS5611::MS5611(uint8_t select, uint8_t dataOut, uint8_t dataIn, uint8_t clock)
 
     //  SPI
     _select = select;
-    _dataIn = dataOut;
-    _dataOut = dataIn;
+    _dataIn = mosi;
+    _dataOut = miso;
     _clock = clock;
 }
 
@@ -41,7 +41,6 @@ bool MS5611::begin()
     digitalWrite(_select, HIGH);
 
     setSPIspeed(_SPIspeed);
-    mySPI = new SPIClass(FSPI);
     mySPI->end();
     mySPI->begin(_clock, _dataOut, _dataIn, _select);
 
@@ -51,6 +50,7 @@ bool MS5611::begin()
 
 bool MS5611::reset()
 {
+    _startRead = 0;
     sendCommand(MS5611_CMD_RESET);
     uint32_t start = micros();
     // waiting at least 2.8ms after Reset
@@ -66,27 +66,37 @@ bool MS5611::reset()
 
     // read factory calibrations from EEPROM.
     bool ROM_OK = true;
-    for (uint8_t reg = 0; reg < 7; reg++)
+    uint16_t prom[8];
+    for (uint8_t reg = 0; reg < 8; reg++)
     {
         //  used indices match datasheet.
         //  C[0] == manufacturer - read but not used;
-        //  C[7] == CRC - skipped.
+        //  PROM word 7 contains the CRC nibble.
         uint16_t tmp = readProm(reg);
-        C[reg] *= tmp;
+        prom[reg] = tmp;
+        if (reg < 7) C[reg] *= tmp;
 
         // check if data was recived
-        if (reg > 0)
+        if (reg > 0 && reg < 7)
         {
-            ROM_OK = ROM_OK && (tmp != 0);
+            ROM_OK = ROM_OK && (tmp != 0 && tmp != 0xFFFF);
         }
     }
-    return ROM_OK;
+    const uint8_t expectedCrc = prom[7] & 0x0F;
+    prom[7] &= 0xFF00;
+    uint16_t remainder = 0;
+    for (uint8_t byte = 0; byte < 16; ++byte) {
+        remainder ^= (byte & 1) ? (prom[byte / 2] & 0xFF) : (prom[byte / 2] >> 8);
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            remainder = (remainder & 0x8000) ? (remainder << 1) ^ 0x3000 : remainder << 1;
+        }
+    }
+    return ROM_OK && ((remainder >> 12) & 0x0F) == expectedCrc;
 }
 
 bool MS5611::update()
 {
     uint32_t start = micros();
-    static uint32_t D1 = 0, D2 = 0;
 
     if (_startRead && start - _convertStart >= _CONVERT_DELAY)
     {
@@ -94,15 +104,18 @@ bool MS5611::update()
 
         if (_startRead == 2)
         {
-            D1 = readADC();
+            _rawPressure = readADC();
             sendCommand(MS5611_CMD_CONVERT_D2);
-            _convertStart = start;
+            _convertStart = micros();
             return false;
         }
         else if (_startRead == 0)
         {
-            D2 = readADC();
-            calculateValues(D1, D2);
+            const uint32_t D2 = readADC();
+            if (_rawPressure == 0 || _rawPressure == 0xFFFFFF || D2 == 0 || D2 == 0xFFFFFF) {
+                return false;
+            }
+            calculateValues(_rawPressure, D2);
             return true;
         }
     }
@@ -235,13 +248,13 @@ void MS5611::calculateValues(uint32_t D1, uint32_t D2)
     if (_temperature < 2000)
     {
         float T2 = dT * dT * 4.6566128731E-10;
-        float t = (_temperature - 2000) * (_temperature - 2000);
+        float t = float(_temperature - 2000) * float(_temperature - 2000);
         float offset2 = 2.5 * t;
         float sens2 = 1.25 * t;
         //  COMMENT OUT < -1500 CORRECTION IF NOT NEEDED
         if (_temperature < -1500)
         {
-            t = (_temperature + 1500) * (_temperature + 1500);
+            t = float(_temperature + 1500) * float(_temperature + 1500);
             offset2 += 7 * t;
             sens2 += 5.5 * t;
         }

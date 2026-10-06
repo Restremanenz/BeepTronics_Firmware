@@ -8,26 +8,26 @@
 #include "Arduino.h"
 #include "SPI.h"
 
-#define MS5611_SAMPLE_RATE 50
-
 class MS5611
 {
 public:
-    explicit MS5611(uint8_t select, uint8_t dataOut = 255, uint8_t dataIn = 255, uint8_t clock = 255);
+    explicit MS5611(uint8_t select, uint8_t miso, uint8_t mosi, uint8_t clock);
+    MS5611(const MS5611&) = delete;
+    MS5611& operator=(const MS5611&) = delete;
 
     bool begin();
 
     //reset command + get constants
-    //returns false if ROM constants == 0;
+    // Returns false for invalid calibration words or a PROM CRC mismatch.
     bool reset();
 
     //  the actual reading of the sensor;
-    //  returns MS5611_READ_OK upon success
+    //  Starts a conversion if the driver is idle.
     void startRead();
 
     bool update();
 
-    //  temperature is in ²C
+    // Temperature in degrees Celsius.
     float getTemperature() const;
 
     //  pressure is in mBar
@@ -57,8 +57,9 @@ protected:
     int _result;
     float C[7];
     uint32_t _lastRead;
-    uint8_t _startRead;
-    unsigned long _convertStart;
+    uint8_t _startRead = 0;
+    uint32_t _convertStart = 0;
+    uint32_t _rawPressure = 0;
     const uint16_t _CONVERT_DELAY = 9100;
 
     uint8_t _select;
@@ -67,6 +68,7 @@ protected:
     uint8_t _clock;
     uint32_t _SPIspeed = 1000000;
 
-    SPIClass *mySPI;
+    SPIClass _spi{FSPI};
+    SPIClass *mySPI = &_spi;
     SPISettings _spi_settings;
 };
